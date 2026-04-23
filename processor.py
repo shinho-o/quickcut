@@ -30,11 +30,25 @@ def probe_resolution(video: Path) -> tuple[int, int]:
     return int(s["width"]), int(s["height"])
 
 
-def transcribe(video: Path, model_name: str = "small", lang: str = "ko") -> list[dict]:
-    """Whisper 로 세그먼트 전사."""
+import threading as _th
+_WHISPER_CACHE: dict = {}
+_WHISPER_LOCK = _th.Lock()
+
+
+def _get_whisper(model_name: str):
     from faster_whisper import WhisperModel
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
-    segs_iter, _ = model.transcribe(str(video), language=lang, beam_size=1, vad_filter=True)
+    with _WHISPER_LOCK:
+        if model_name not in _WHISPER_CACHE:
+            _WHISPER_CACHE[model_name] = WhisperModel(
+                model_name, device="cpu", compute_type="int8")
+        return _WHISPER_CACHE[model_name]
+
+
+def transcribe(video: Path, model_name: str = "small", lang: str = "ko") -> list[dict]:
+    """Whisper 로 세그먼트 전사. 모델은 프로세스당 한 번만 로드."""
+    model = _get_whisper(model_name)
+    segs_iter, _ = model.transcribe(
+        str(video), language=lang, beam_size=1, vad_filter=True)
     return [
         {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()}
         for s in segs_iter
@@ -146,19 +160,31 @@ def build_caption_filter(segments: list[dict], preset_name: str,
 # ───────── 클립 처리 ─────────
 
 def trim_clip(src: Path, out: Path, start: float, end: float):
-    """재인코딩해서 키프레임 의존성 제거 (정확한 컷)."""
+    """정확한 프레임 컷: -ss 를 -i 뒤(decode seek)에 두고 재인코딩.
+    모든 클립을 같은 파라미터(1080p · 30fps · AAC 48k · yuv420p)로 통일해
+    concat 시 해상도/fps 미스매치를 방지한다.
+    """
     run([
-        "ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
+        "ffmpeg", "-y",
         "-i", str(src),
+        "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
+        "-vf", "scale=w=1920:h=1080:force_original_aspect_ratio=decrease,"
+               "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,"
+               "fps=30,format=yuv420p",
         "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-        "-c:a", "aac", "-b:a", "160k",
+        "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
         "-movflags", "+faststart",
         str(out),
     ])
 
 
+def _concat_list_escape(path: Path) -> str:
+    """concat demuxer 의 file 경로 — 싱글쿼트만 탈출."""
+    return path.as_posix().replace("'", r"'\''")
+
+
 def concat_clips(clips: list[Path], out: Path):
-    """여러 mp4 를 concat demuxer 로 이어붙임 (전부 같은 인코딩 조건).
+    """여러 mp4 를 concat demuxer 로 이어붙임 (trim_clip 이 파라미터 통일).
     단일 클립이면 바로 복사.
     """
     if len(clips) == 1:
@@ -168,7 +194,7 @@ def concat_clips(clips: list[Path], out: Path):
     tmpdir = Path(tempfile.mkdtemp(prefix="qc_concat_"))
     listing = tmpdir / "list.txt"
     listing.write_text(
-        "\n".join(f"file '{c.as_posix()}'" for c in clips),
+        "\n".join(f"file '{_concat_list_escape(c)}'" for c in clips),
         encoding="utf-8",
     )
     run([

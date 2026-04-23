@@ -11,6 +11,7 @@ import tempfile
 import threading
 import traceback
 import uuid
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -29,8 +30,14 @@ PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1GB
 
-# 메모리 내 작업 상태 (지속성 필요 없음)
+# 메모리 내 작업 상태
 _JOBS: dict[str, dict] = {}
+_JOBS_LOCK = threading.Lock()
+
+# 프로젝트별 메타 쓰기 락 (레이스 방지)
+_META_LOCKS: dict[str, threading.Lock] = defaultdict(threading.Lock)
+# 프로젝트별 내보내기 중복 방지 락
+_EXPORT_LOCKS: dict[str, threading.Lock] = defaultdict(threading.Lock)
 
 
 # ───────── 유틸 ─────────
@@ -43,13 +50,36 @@ def project_dir(pid: str) -> Path:
 
 
 def project_meta(pid: str) -> dict:
+    """디스크에서 최신 meta 로드. 파일 없으면 404."""
     p = project_dir(pid) / "project.json"
-    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    if not p.exists():
+        abort(404)
+    return json.loads(p.read_text(encoding="utf-8"))
 
 
 def save_meta(pid: str, data: dict):
-    (project_dir(pid) / "project.json").write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    """임시 파일 쓰고 atomic rename — 중간 크래시에도 파일 손상 방지."""
+    target = project_dir(pid) / "project.json"
+    with _META_LOCKS[pid]:
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, target)
+
+
+def merge_clip_patch(pid: str, clip_id: str, patch: dict):
+    """meta 를 다시 로드해 해당 클립만 merge 후 저장 — 레이스 안전."""
+    with _META_LOCKS[pid]:
+        target = project_dir(pid) / "project.json"
+        meta = json.loads(target.read_text(encoding="utf-8"))
+        for c in meta.get("clips", []):
+            if c["id"] == clip_id:
+                c.update({k: v for k, v in patch.items() if k != "id"})
+                break
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, target)
 
 
 # ───────── 라우트: 메인/프로젝트 생성 ─────────
@@ -152,53 +182,93 @@ def clip_video(pid, cid):
 
 @app.route("/project/<pid>/update", methods=["POST"])
 def project_update(pid):
-    meta = project_meta(pid)
     data = request.get_json() or {}
 
-    if "style_preset" in data:
-        meta["style_preset"] = data["style_preset"]
-    if "orientation" in data:
-        meta["orientation"] = data["orientation"]
-    if "skip_silence" in data:
-        meta["skip_silence"] = bool(data["skip_silence"])
-    if "clips" in data:
-        # 클립별 트림·세그먼트·스킵 결정 업데이트
-        by_id = {c["id"]: c for c in meta["clips"]}
-        for patch in data["clips"]:
-            cid = patch.get("id")
-            if cid not in by_id:
-                continue
-            for k in ("trim_start", "trim_end", "segments", "silence_ranges"):
-                if k in patch:
-                    by_id[cid][k] = patch[k]
+    # 프로젝트 단위 필드
+    with _META_LOCKS[pid]:
+        target = project_dir(pid) / "project.json"
+        meta = json.loads(target.read_text(encoding="utf-8"))
 
-    save_meta(pid, meta)
+        if "title" in data:
+            t = (data["title"] or "").strip()
+            if t:
+                meta["title"] = t
+        if "style_preset" in data:
+            meta["style_preset"] = data["style_preset"]
+        if "orientation" in data:
+            meta["orientation"] = data["orientation"]
+        if "skip_silence" in data:
+            meta["skip_silence"] = bool(data["skip_silence"])
+
+        if "clips" in data:
+            by_id = {c["id"]: c for c in meta["clips"]}
+            for patch in data["clips"]:
+                cid = patch.get("id")
+                if cid not in by_id:
+                    continue
+                for k in ("trim_start", "trim_end", "segments", "silence_ranges"):
+                    if k in patch:
+                        by_id[cid][k] = patch[k]
+
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, target)
     return jsonify({"ok": True})
 
 
 # ───────── 분석 작업 (Whisper + 무음) ─────────
 
-def _run_analyze(pid: str, job_id: str):
+def _run_analyze(pid: str, job_id: str, keep_existing: bool):
+    """클립 단위 분석. keep_existing=True 면 이미 segments 가 있는 클립은 건너뜀.
+
+    사용자가 도중에 자막을 수정해도 손실되지 않도록 **매 클립마다 최신 meta
+    를 디스크에서 다시 읽어 해당 클립만 patch** 한다.
+    """
     try:
-        meta = project_meta(pid)
-        total = len(meta["clips"])
-        for idx, clip in enumerate(meta["clips"]):
-            _JOBS[job_id]["progress"] = f"전사 {idx+1}/{total}: {clip['filename']}"
+        # 처음 한 번만 클립 목록 스냅샷 얻기 (파일 추가/삭제는 없으니 안전)
+        initial = json.loads(
+            (project_dir(pid) / "project.json").read_text(encoding="utf-8"))
+        clip_ids = [c["id"] for c in initial["clips"]]
+        total = len(clip_ids)
+
+        for idx, cid in enumerate(clip_ids):
+            # 현재 meta 재로드 → 사용자 편집 반영
+            current = json.loads(
+                (project_dir(pid) / "project.json").read_text(encoding="utf-8"))
+            clip = next((c for c in current["clips"] if c["id"] == cid), None)
+            if not clip:
+                continue
+
+            if keep_existing and clip.get("segments"):
+                _JOBS[job_id]["progress"] = f"건너뜀 {idx+1}/{total}: 이미 분석됨"
+                continue
+
             video_path = project_dir(pid) / "clips" / clip["filename"]
+            _JOBS[job_id]["progress"] = f"자막 생성 {idx+1}/{total}: {clip['filename']}"
             segments = processor.transcribe(video_path)
-            clip["segments"] = segments
 
-            _JOBS[job_id]["progress"] = f"무음감지 {idx+1}/{total}"
+            _JOBS[job_id]["progress"] = f"무음 감지 {idx+1}/{total}/{total}"
             try:
-                clip["silence_ranges"] = silence_mod.detect_silence_ranges(
-                    video_path, segments)
+                sil = silence_mod.detect_silence_ranges(video_path, segments)
             except Exception:
-                clip["silence_ranges"] = []
+                sil = []
 
-            save_meta(pid, meta)  # 각 클립 끝날 때마다 저장
+            merge_clip_patch(pid, cid, {
+                "segments": segments,
+                "silence_ranges": sil,
+            })
 
-        meta["status"] = "분석 완료"
-        save_meta(pid, meta)
+        # 상태 업데이트 (전체 meta 재로드 후 수정)
+        with _META_LOCKS[pid]:
+            target = project_dir(pid) / "project.json"
+            m = json.loads(target.read_text(encoding="utf-8"))
+            m["status"] = "분석 완료"
+            tmp = target.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(m, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, target)
+
         _JOBS[job_id].update({"status": "done", "progress": "완료"})
     except Exception as e:
         traceback.print_exc()
@@ -207,9 +277,17 @@ def _run_analyze(pid: str, job_id: str):
 
 @app.route("/project/<pid>/analyze", methods=["POST"])
 def project_analyze(pid):
+    """?force=1 이면 모든 클립 재분석 (기존 수정 자막 덮어씀).
+    기본: 이미 segments 있는 클립은 건너뜀.
+    """
+    keep_existing = (request.args.get("force") != "1")
     job_id = uuid.uuid4().hex[:8]
-    _JOBS[job_id] = {"status": "running", "progress": "시작 중"}
-    threading.Thread(target=_run_analyze, args=(pid, job_id), daemon=True).start()
+    with _JOBS_LOCK:
+        _JOBS[job_id] = {"status": "running", "progress": "시작 중"}
+    threading.Thread(
+        target=_run_analyze, args=(pid, job_id, keep_existing),
+        daemon=True,
+    ).start()
     return jsonify({"job_id": job_id})
 
 
@@ -224,6 +302,11 @@ def job_status(job_id):
 # ───────── 내보내기 ─────────
 
 def _run_export(pid: str, job_id: str):
+    lock = _EXPORT_LOCKS[pid]
+    if not lock.acquire(blocking=False):
+        _JOBS[job_id].update({"status": "error",
+                              "error": "이미 내보내기가 진행 중입니다."})
+        return
     try:
         meta = project_meta(pid)
         pdir = project_dir(pid)
@@ -295,15 +378,21 @@ def _run_export(pid: str, job_id: str):
             vertical=(meta.get("orientation") == "vertical"),
         )
 
-        # 최종 타임라인 세그먼트도 저장
-        meta["last_export"] = {
-            "filename": final_out.name,
-            "created": datetime.now().isoformat(timespec="seconds"),
-            "duration": round(offset, 2),
-            "segments": combined_segments,
-        }
-        meta["status"] = "내보내기 완료"
-        save_meta(pid, meta)
+        # 최종 타임라인 세그먼트도 저장 (디스크 최신 meta 에 merge)
+        with _META_LOCKS[pid]:
+            target = pdir / "project.json"
+            m = json.loads(target.read_text(encoding="utf-8"))
+            m["last_export"] = {
+                "filename": final_out.name,
+                "created": datetime.now().isoformat(timespec="seconds"),
+                "duration": round(offset, 2),
+                "segments": combined_segments,
+            }
+            m["status"] = "내보내기 완료"
+            tmp = target.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(m, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, target)
 
         _JOBS[job_id].update({
             "status": "done",
@@ -313,6 +402,8 @@ def _run_export(pid: str, job_id: str):
     except Exception as e:
         traceback.print_exc()
         _JOBS[job_id].update({"status": "error", "error": str(e)})
+    finally:
+        lock.release()
 
 
 @app.route("/project/<pid>/export", methods=["POST"])

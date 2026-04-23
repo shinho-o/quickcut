@@ -1,121 +1,129 @@
 # QuickCut
 
-브이로그 편집 시간을 줄이는 가벼운 로컬 앱. 여러 영상을 올리면 자동으로 자막
-을 만들고 무음 구간을 찾아주고, 프리뷰에서 자막 텍스트·타이밍·트림 범위를
-직접 손봐서 한 번에 영상으로 뽑는다.
+브이로그 편집 시간을 줄이기 위한 **로컬 편집기**. 영상을 올리면 자막이 자동으로
+만들어지고, 무음 구간을 찾아주고, 타이밍과 문장을 바로 고쳐서 한 번에 영상으로
+뽑아준다.
 
-— 브라우저에서 쓰는 **개인용 편집 툴**. 렌더 백엔드·계정·업로드·공유 기능은
-없음. 전부 내 컴퓨터 안에서 돌아간다.
-
----
-
-## 쓸 수 있는 것
-
-- **여러 영상 한 번에 업로드** (mp4 · mov · webm)
-- **한국어 자동 자막** (Whisper, 완전 오프라인)
-- **무음 구간 자동 감지** → 체크박스로 선택해서 빼기
-- **클립별 앞뒤 트리밍** (타임라인 드래그)
-- **자막 수동 수정** (오타 정정, 줄 추가·삭제)
-- **자막 스타일 프리셋 4종** (미니멀 / 굵게 / 박스 / 상단)
-- **가로(원본) / 세로 9:16** 선택
-- **한 번의 "내보내기"** 로 mp4 파일 저장
-
-## 아직 없는 것
-
-- 멀티 클립 드래그 재정렬 (파일 이름 순서대로 이어짐)
-- BGM 추가
-- 전환 효과
-- 색보정 · 얼굴 트래킹 크롭
+— 계정·로그인·업로드·공유 기능 **없음**. 전부 내 컴퓨터 안에서만 돈다.
 
 ---
 
-## 설치
+## Mac 설치 (5분)
 
-### 1) ffmpeg 설치
+### 1) Homebrew · ffmpeg · Python
 
-| OS | 명령 |
-|---|---|
-| Windows | `winget install Gyan.FFmpeg` |
-| macOS | `brew install ffmpeg` |
-| Linux | `sudo apt install ffmpeg` |
-
-설치 뒤 터미널 재시작. `ffmpeg -version` 으로 확인.
-
-### 2) Python 패키지
+**터미널** (⌘+Space → "터미널") 에서 한 줄씩 실행.
 
 ```bash
-pip install -r requirements.txt
+# Homebrew 가 없으면 먼저 설치
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# ffmpeg 와 Python 설치
+brew install ffmpeg python
 ```
 
-> `faster-whisper` 는 첫 실행 시 **약 460MB** (small 모델) 자동 다운로드.
+### 2) QuickCut 받기
 
----
-
-## 실행
-
-### Windows
-```
-start.bat
-```
-더블클릭하거나 명령창에서 실행. `http://localhost:7400` 열리면 준비 완료.
-
-### macOS / Linux
 ```bash
-chmod +x start.sh
+cd ~/Downloads
+git clone <리포 URL> quickcut
+cd quickcut
+```
+
+### 3) 실행
+
+```bash
 ./start.sh
 ```
+
+처음 한 번은 Python 패키지 설치(~2분) + Whisper 모델 다운로드(460MB, ~5분)
+하느라 시간이 걸린다. 이후부턴 몇 초 안에 뜸.
+
+브라우저가 안 뜨면 **`http://localhost:7400`** 직접 접속.
+
+---
+
+## Windows 설치
+
+관리자 PowerShell 에서:
+
+```powershell
+winget install Gyan.FFmpeg
+winget install Python.Python.3.11
+```
+
+터미널 다시 열고:
+```
+pip install -r requirements.txt
+start.bat
+```
+
+> Mac 이 주 환경이라 Windows 는 간소화. 문제 생기면 Mac 방식 권장.
 
 ---
 
 ## 사용 흐름
 
-1. **메인 페이지**에서 영상 드래그 → "프로젝트 만들기"
-2. 프로젝트 페이지에서 **"자동 분석"** 누르기 — 자막 생성 + 무음 감지 (영상
-   1개당 1–3분)
-3. 각 클립의:
-   - **자막** 오른쪽 표에서 텍스트·시간 직접 수정
-   - **무음 구간** 체크박스로 빼거나 남기기
-   - **트림** 왼쪽 타임라인에서 앞뒤 자르기
-4. 왼쪽 사이드에서 **자막 스타일**·**비율**·**무음 자동 스킵** 설정
-5. **"영상 내보내기"** → 완료되면 나오는 링크로 다운로드
+1. 메인에서 **영상 여러 개 끌어다 놓기** → "프로젝트 만들기"
+2. **자동 분석** 버튼 → 자막 + 무음 감지 (영상 1개당 1–3분)
+3. 각 클립에서
+   - 자막 문장 타이핑으로 바로 수정 (오타 잡기)
+   - 옆에 뜬 무음 구간 체크박스로 **스킵할지 남길지** 결정
+   - 타임라인 핸들 끌어서 앞뒤 잘라내기
+4. 왼쪽 사이드:
+   - 자막 스타일 (미니멀 / 굵게 / 박스 / 상단)
+   - 비율 (원본 / 9:16 세로)
+5. **영상 내보내기** → 완성본 mp4 다운로드
 
 ---
 
-## 파일 구조
+## 할 수 있는 것 · 아직 없는 것
+
+**Can**
+- 여러 영상 한꺼번에
+- 한국어 자동 자막 (오프라인)
+- 무음 구간 자동 감지 + 선택 스킵
+- 클립별 트림
+- 자막 문장·시간 직접 수정
+- 자막 스타일 4종
+- 9:16 세로 내보내기
+- H.264 / AAC (모든 기기 재생 OK)
+
+**Not yet**
+- 클립 순서 드래그 (파일 이름 순서대로 이어짐)
+- 배경 음악
+- 전환 효과 · 색보정
+- 얼굴 트래킹 크롭
+
+---
+
+## 폴더 구조
 
 ```
 quickcut/
-├── app.py              Flask 엔드포인트
-├── processor.py        Whisper 전사 + ffmpeg 트림·자막·컨캣
-├── silence.py          librosa 기반 무음 감지
-├── templates/
-│   ├── index.html      프로젝트 목록 + 업로드
-│   └── project.html    에디터
-├── static/
-│   ├── app.css         스타일
-│   ├── index.js        업로드 페이지 JS
-│   └── project.js      에디터 JS
-├── data/projects/      (gitignore) 업로드 · 메타 · 결과물 저장소
+├── app.py             Flask 서버
+├── processor.py       Whisper + ffmpeg
+├── silence.py         무음 감지
+├── templates/         HTML
+├── static/            CSS · JS
+├── data/projects/     작업물 (git 제외)
 ├── requirements.txt
-├── start.bat / start.sh
+├── start.sh           Mac / Linux
+├── start.bat          Windows
 └── README.md
 ```
 
----
+## 처음이 느린 이유
 
-## 처음 느린 이유
-
-- Whisper 모델 460MB 다운로드 (한 번만)
-- CPU 로 전사하기 때문에 영상 1개당 1–3분 (GPU 없이 돌 수 있게 `int8`
-  양자화 사용)
+- Whisper 'small' 모델 460MB 한 번 받음
+- CPU 전사라 영상 1개당 1–3분 (Apple Silicon 은 더 빠름)
 
 ## 용량 관리
 
-`data/projects/<프로젝트ID>/` 안에 원본 + 결과물이 쌓인다. 오래된 프로젝트
-는 메인 페이지에서 "×" 버튼으로 삭제.
+`data/projects/` 에 원본·결과물이 쌓인다. 오래된 프로젝트는 메인에서 × 눌러
+삭제.
 
-## 주의
+## 안전
 
-- 아직 기본 인증이 없음 → **공용 네트워크에 노출하지 말 것**.
-- `0.0.0.0` 바인딩이라 같은 네트워크의 폰/태블릿에서도 `http://<PC-IP>:7400`
-  으로 접속 가능.
+- **공용 네트워크에 노출하지 말 것.** `0.0.0.0` 바인딩이라 같은 Wi-Fi 의
+  다른 기기에서도 `http://<Mac-IP>:7400` 으로 접속 가능.

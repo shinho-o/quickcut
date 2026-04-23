@@ -38,8 +38,64 @@ orientation.addEventListener('change', () =>
 skipSilence.addEventListener('change', () =>
     saveMeta({ skip_silence: skipSilence.checked }));
 
-titleInput.addEventListener('blur', () => {
-    // 제목은 update 엔드포인트에서 받지 않으므로 별도 처리 생략
+titleInput.addEventListener('change', () => {
+    const v = titleInput.value.trim();
+    if (v) saveMeta({ title: v });
+});
+titleInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); titleInput.blur(); }
+});
+
+// ───── mm:ss.s 시간 포맷 ↔ 초 변환 ─────
+function parseTime(str) {
+    if (typeof str === 'number') return str;
+    const s = String(str).trim();
+    const m = s.match(/^(?:(\d+):)?(\d+(?:\.\d+)?)$/);
+    if (!m) return parseFloat(s) || 0;
+    const mins = parseFloat(m[1] || 0);
+    const secs = parseFloat(m[2] || 0);
+    return mins * 60 + secs;
+}
+function fmtTime(sec) {
+    sec = Math.max(0, sec || 0);
+    const m = Math.floor(sec / 60);
+    const s = (sec - m * 60).toFixed(1);
+    return `${m}:${s.padStart(4, '0')}`;
+}
+
+// ───── Undo 스택 ─────
+const UNDO_MAX = 20;
+const undoStack = [];
+function pushUndo(entry) {
+    undoStack.push(entry);
+    if (undoStack.length > UNDO_MAX) undoStack.shift();
+}
+function showToast(msg, onUndo) {
+    let toast = document.getElementById('toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'toast';
+        document.body.appendChild(toast);
+    }
+    toast.innerHTML = `<span>${msg}</span>`;
+    if (onUndo) {
+        const btn = document.createElement('button');
+        btn.textContent = '되돌리기';
+        btn.className = 'toast-undo';
+        btn.onclick = () => { onUndo(); toast.classList.remove('show'); };
+        toast.appendChild(btn);
+    }
+    toast.classList.add('show');
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => toast.classList.remove('show'), 6000);
+}
+// 키보드 Ctrl+Z
+window.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && undoStack.length) {
+        e.preventDefault();
+        const f = undoStack.pop();
+        if (f) f();
+    }
 });
 
 // ───── 클립 렌더 ─────
@@ -114,27 +170,37 @@ function initTrim(card, clip) {
     layout();
 
     function bindDrag(handle, key) {
-        let dragging = false;
         handle.addEventListener('mousedown', e => {
             e.preventDefault();
-            dragging = true;
-        });
-        window.addEventListener('mouseup', () => {
-            if (!dragging) return;
-            dragging = false;
-            saveMeta({ clips: [{ id: clip.id, [key]: clip[key] }] });
-        });
-        window.addEventListener('mousemove', e => {
-            if (!dragging) return;
-            const rect = track.getBoundingClientRect();
-            const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-            const val = x * clip.duration;
-            if (key === 'trim_start') {
-                clip.trim_start = Math.min(val, clip.trim_end - 0.5);
-            } else {
-                clip.trim_end = Math.max(val, clip.trim_start + 0.5);
-            }
-            layout();
+            const before = clip[key];
+
+            const onMove = ev => {
+                const rect = track.getBoundingClientRect();
+                const x = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+                const val = x * clip.duration;
+                if (key === 'trim_start') {
+                    clip.trim_start = Math.min(val, clip.trim_end - 0.5);
+                } else {
+                    clip.trim_end = Math.max(val, clip.trim_start + 0.5);
+                }
+                layout();
+            };
+            const onUp = () => {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+                if (Math.abs(clip[key] - before) < 0.05) return;
+                const after = clip[key];
+                saveMeta({ clips: [{ id: clip.id, [key]: after }] });
+                pushUndo(() => {
+                    clip[key] = before;
+                    layout();
+                    saveMeta({ clips: [{ id: clip.id, [key]: before }] });
+                    showToast('트림 되돌림');
+                });
+                showToast(`트림 조정 (Ctrl+Z 되돌리기)`);
+            };
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
         });
     }
     bindDrag(h1, 'trim_start');
@@ -154,10 +220,11 @@ function renderCaptions(card, clip) {
             const row = document.createElement('div');
             row.className = 'cap-row';
             row.innerHTML = `
-                <input type="number" step="0.1" value="${seg.start}" data-k="start">
-                <input type="number" step="0.1" value="${seg.end}" data-k="end">
+                <input type="text" value="${fmtTime(seg.start)}" data-k="start" class="cap-time" title="시작 mm:ss.s">
+                <input type="text" value="${fmtTime(seg.end)}" data-k="end" class="cap-time" title="끝 mm:ss.s">
                 <input type="text" value="${escapeAttr(seg.text)}" class="cap-text" data-k="text">
-                <div class="cap-del" title="삭제">×</div>
+                <button type="button" class="cap-play" title="이 부분 재생">▶</button>
+                <button type="button" class="cap-del" title="삭제">×</button>
             `;
             list.appendChild(row);
 
@@ -165,15 +232,40 @@ function renderCaptions(card, clip) {
                 inp.addEventListener('change', () => {
                     const k = inp.dataset.k;
                     let v = inp.value;
-                    if (k !== 'text') v = parseFloat(v) || 0;
-                    clip.segments[i][k] = v;
+                    if (k === 'text') {
+                        clip.segments[i].text = v;
+                    } else {
+                        clip.segments[i][k] = parseTime(v);
+                        inp.value = fmtTime(clip.segments[i][k]);  // 정규화
+                    }
                     saveMeta({ clips: [{ id: clip.id, segments: clip.segments }] });
                 });
             });
+
+            row.querySelector('.cap-play').addEventListener('click', () => {
+                const v = card.querySelector('video');
+                if (!v) return;
+                v.currentTime = clip.segments[i].start;
+                v.play();
+                // end 까지만 재생
+                const endT = clip.segments[i].end;
+                const stopAt = () => {
+                    if (v.currentTime >= endT) { v.pause(); v.removeEventListener('timeupdate', stopAt); }
+                };
+                v.addEventListener('timeupdate', stopAt);
+            });
+
             row.querySelector('.cap-del').addEventListener('click', () => {
+                const removed = clip.segments[i];
                 clip.segments.splice(i, 1);
                 saveMeta({ clips: [{ id: clip.id, segments: clip.segments }] });
                 renderCaptions(card, clip);
+                pushUndo(() => {
+                    clip.segments.splice(i, 0, removed);
+                    saveMeta({ clips: [{ id: clip.id, segments: clip.segments }] });
+                    renderCaptions(card, clip);
+                });
+                showToast(`"${removed.text.slice(0, 20)}" 삭제`, () => {});
             });
         });
     }
@@ -186,6 +278,10 @@ function renderCaptions(card, clip) {
         clip.segments.push({ start, end: start + 2, text: '' });
         saveMeta({ clips: [{ id: clip.id, segments: clip.segments }] });
         renderCaptions(card, clip);
+        // 새로 추가된 줄의 텍스트 칸에 포커스
+        const rows = card.querySelectorAll('.cap-row');
+        const last_row = rows[rows.length - 1];
+        if (last_row) last_row.querySelector('.cap-text').focus();
     };
 }
 
@@ -280,14 +376,22 @@ async function pollJob(jobId, statusEl, onDone) {
         const j = await r.json();
         if (j.status === 'done') {
             clearInterval(timer);
-            statusEl.textContent = j.progress || '완료';
+            statusEl.innerHTML = j.progress || '완료';
             onDone(j);
         } else if (j.status === 'error') {
             clearInterval(timer);
             statusEl.className = 'status err';
             statusEl.textContent = '오류: ' + (j.error || '알 수 없음');
         } else {
-            statusEl.textContent = j.progress || '처리 중…';
+            // "자막 생성 3/5" 처럼 숫자가 있으면 진행바 계산
+            const m = (j.progress || '').match(/(\d+)\/(\d+)/);
+            if (m) {
+                const pct = (parseInt(m[1]) / parseInt(m[2])) * 100;
+                statusEl.innerHTML =
+                    `${j.progress}<progress value="${pct}" max="100"></progress>`;
+            } else {
+                statusEl.innerHTML = j.progress || '처리 중…';
+            }
         }
     }, 2000);
 }
