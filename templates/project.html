@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ meta.title }} · QuickCut</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<script>
+window.PROJECT = {{ meta | tojson | safe }};
+window.PRESETS = {{ style_presets | tojson | safe }};
+</script>
+</head>
+<body>
+<header class="site">
+    <a class="home-link" href="/">← 목록</a>
+    <h1 class="proj-header">
+        <input id="title" value="{{ meta.title }}" class="title-edit">
+    </h1>
+</header>
+
+<main class="wrap editor">
+
+    <aside class="side">
+        <button id="analyzeBtn" class="btn-primary">자동 분석 (자막 + 무음 감지)</button>
+        <div id="analyzeStatus" class="status"></div>
+
+        <section class="card">
+            <h3>내보내기 설정</h3>
+
+            <label class="fld">
+                <span>자막 스타일</span>
+                <select id="stylePreset">
+                    {% for key, preset in style_presets.items() %}
+                    <option value="{{ key }}" {% if meta.style_preset == key %}selected{% endif %}>{{ preset.label }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label class="fld">
+                <span>영상 비율</span>
+                <select id="orientation">
+                    <option value="original" {% if meta.orientation == 'original' %}selected{% endif %}>원본 그대로</option>
+                    <option value="vertical" {% if meta.orientation == 'vertical' %}selected{% endif %}>9:16 세로</option>
+                </select>
+            </label>
+
+            <label class="fld inline">
+                <input type="checkbox" id="skipSilence" {% if meta.skip_silence %}checked{% endif %}>
+                <span>무음 구간 자동 스킵</span>
+            </label>
+
+            <button id="exportBtn" class="btn-primary">영상 내보내기</button>
+            <div id="exportStatus" class="status"></div>
+        </section>
+    </aside>
+
+    <div class="clips" id="clipsRoot">
+        <!-- JS 로 클립 카드 렌더 -->
+    </div>
+
+</main>
+
+<script src="{{ url_for('static', filename='project.js') }}"></script>
+</body>
+</html>

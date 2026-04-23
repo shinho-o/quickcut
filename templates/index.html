@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QuickCut</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+<header class="site">
+    <h1>QuickCut</h1>
+    <p class="tagline">브이로그 빠른 편집기</p>
+</header>
+
+<main class="wrap">
+
+    <section class="panel upload">
+        <h2>새 프로젝트 시작</h2>
+        <form id="newForm" class="upload-form">
+            <label class="fld">
+                <span>제목 (선택)</span>
+                <input type="text" name="title" placeholder="예: 제주 2박 3일">
+            </label>
+
+            <label class="drop" id="dropzone">
+                <input type="file" id="videoInput" name="videos" accept="video/*" multiple required hidden>
+                <div class="drop-inner">
+                    <div class="drop-title">여기에 영상을 끌어다 놓거나 클릭하세요</div>
+                    <div class="drop-hint">여러 개 한꺼번에 가능 · mp4/mov/webm</div>
+                    <ul id="fileList" class="file-list"></ul>
+                </div>
+            </label>
+
+            <button type="submit" class="btn-primary" id="createBtn" disabled>프로젝트 만들기</button>
+            <div id="createStatus" class="status"></div>
+        </form>
+    </section>
+
+    {% if projects %}
+    <section class="panel list">
+        <h2>프로젝트</h2>
+        <ul class="proj-list">
+            {% for p in projects %}
+            <li>
+                <a href="{{ url_for('project_page', pid=p.id) }}" class="proj">
+                    <div class="proj-title">{{ p.title }}</div>
+                    <div class="proj-meta">
+                        <span>{{ p.clip_count }}개 클립</span>
+                        <span class="dot"></span>
+                        <span>{{ p.status }}</span>
+                        <span class="dot"></span>
+                        <span>{{ p.created[:10] }}</span>
+                    </div>
+                </a>
+                <button class="btn-ghost" data-delete="{{ p.id }}" title="삭제">×</button>
+            </li>
+            {% endfor %}
+        </ul>
+    </section>
+    {% endif %}
+
+</main>
+
+<script src="{{ url_for('static', filename='index.js') }}"></script>
+</body>
+</html>
