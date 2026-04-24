@@ -28,8 +28,16 @@ function refreshList() {
     });
 }
 
+const VIDEO_EXT = /\.(mp4|mov|m4v|webm|mkv|avi|wmv|flv)$/i;
+
 function addFiles(incoming) {
-    const videos = Array.from(incoming).filter(f => f.type.startsWith('video/'));
+    const list = Array.from(incoming);
+    console.log('[quickcut] addFiles incoming:', list.map(f => ({
+        name: f.name, type: f.type, size: f.size
+    })));
+    const videos = list.filter(f =>
+        (f.type && f.type.startsWith('video/')) || VIDEO_EXT.test(f.name)
+    );
     for (const f of videos) {
         const dup = files.some(x =>
             x.name === f.name && x.size === f.size && x.lastModified === f.lastModified);
