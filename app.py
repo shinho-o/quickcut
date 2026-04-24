@@ -456,7 +456,7 @@ def _run_export(pid: str, job_id: str):
         _JOBS[job_id].update({
             "status": "done",
             "progress": "완료",
-            "download_url": url_for("project_download", pid=pid, fname=final_out.name),
+            "download_url": f"/project/{pid}/download/{final_out.name}",
         })
     except Exception as e:
         traceback.print_exc()
