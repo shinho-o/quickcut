@@ -179,18 +179,16 @@ def build_caption_filter(segments: list[dict], preset_name: str,
 
 def trim_clip(src: Path, out: Path, start: float, end: float):
     """정확한 프레임 컷: -ss 를 -i 뒤(decode seek)에 두고 재인코딩.
-    모든 클립을 같은 파라미터(1080p · 30fps · AAC 48k · yuv420p)로 통일해
-    concat 시 해상도/fps 미스매치를 방지한다.
+    원본 해상도 유지(단, fps 만 통일)하여 화질 손실 최소화.
+    concat 시 같은 해상도 맞추는 건 apply_effects 단계에서 처리.
     """
     run([
         "ffmpeg", "-y",
         "-i", str(src),
         "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
-        "-vf", "scale=w=1920:h=1080:force_original_aspect_ratio=decrease,"
-               "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,"
-               "fps=30,format=yuv420p",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-        "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
+        "-vf", "fps=30,format=yuv420p",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
         "-movflags", "+faststart",
         str(out),
     ])
@@ -251,8 +249,8 @@ def apply_effects(src: Path, out: Path, segments: list[dict] | None,
     if vf_parts:
         cmd += ["-vf", ",".join(vf_parts)]
     cmd += [
-        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-        "-c:a", "aac", "-b:a", "160k",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
         str(out),
     ]
@@ -276,8 +274,8 @@ def _apply_smart_crop(src: Path, out: Path, segments: list[dict] | None,
                 f"crop={s['src_w']}:{s['src_h']}:{s['src_x']}:0,"
                 "scale=1080:1920,fps=30,format=yuv420p"
             ),
-            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-            "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "17",
+            "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
             str(seg),
         ]
         run(cmd)
@@ -298,7 +296,7 @@ def _apply_smart_crop(src: Path, out: Path, segments: list[dict] | None,
     if vf_parts:
         cmd += ["-vf", ",".join(vf_parts)]
     cmd += [
-        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "17",
         "-c:a", "copy",
         "-movflags", "+faststart",
         str(out),
