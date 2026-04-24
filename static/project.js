@@ -19,6 +19,7 @@ const smartEditOpts = document.getElementById('smartEditOpts');
 const removeFillers = document.getElementById('removeFillers');
 const aggressiveFillers = document.getElementById('aggressiveFillers');
 const jumpGap = document.getElementById('jumpGap');
+const wordHighlight = document.getElementById('wordHighlight');
 const titleInput = document.getElementById('title');
 
 // ───── 유틸 ─────
@@ -67,6 +68,8 @@ if (aggressiveFillers) aggressiveFillers.addEventListener('change', () =>
     saveMeta({ aggressive_fillers: aggressiveFillers.checked }));
 if (jumpGap) jumpGap.addEventListener('change', () =>
     saveMeta({ jump_gap: parseFloat(jumpGap.value) || 0.4 }));
+if (wordHighlight) wordHighlight.addEventListener('change', () =>
+    saveMeta({ word_highlight: wordHighlight.checked }));
 
 titleInput.addEventListener('change', () => {
     const v = titleInput.value.trim();
@@ -144,7 +147,17 @@ function renderClip(clip) {
         <div class="clip-body">
             <div>
                 <div class="video-wrap">
-                    <video src="/project/${proj.id}/clip/${clip.id}/video" controls preload="metadata"></video>
+                    <video src="/project/${proj.id}/clip/${clip.id}/video" preload="metadata"></video>
+                    <div class="caption-overlay"></div>
+                    <div class="video-controls">
+                        <button class="vc-play" type="button">▶</button>
+                        <div class="vc-time">0:00.0 / ${fmt(clip.duration)}</div>
+                        <div class="vc-scrubber" title="클릭으로 이동">
+                            <div class="vc-played"></div>
+                            <div class="vc-silence-marks"></div>
+                            <div class="vc-caption-marks"></div>
+                        </div>
+                    </div>
                 </div>
                 <div class="trim">
                     <div class="trim-track" data-trim>
@@ -174,6 +187,106 @@ function renderClip(clip) {
     initTrim(card, clip);
     renderCaptions(card, clip);
     renderSilence(card, clip);
+    initVideoPreview(card, clip);
+}
+
+// ───── 실시간 자막 오버레이 + 단어 하이라이트 ─────
+function initVideoPreview(card, clip) {
+    const video = card.querySelector('video');
+    const overlay = card.querySelector('.caption-overlay');
+    const playBtn = card.querySelector('.vc-play');
+    const timeLabel = card.querySelector('.vc-time');
+    const scrubber = card.querySelector('.vc-scrubber');
+    const played = card.querySelector('.vc-played');
+    const silenceMarks = card.querySelector('.vc-silence-marks');
+    const captionMarks = card.querySelector('.vc-caption-marks');
+
+    function applyOverlayStyle() {
+        const presetName = stylePreset.value || 'minimal';
+        const p = (window.PRESETS || {})[presetName] || {};
+        overlay.style.fontSize = ((p.font_size || 48) / 1080 * 100) + '%';
+        overlay.style.color = p.color || 'white';
+        const hasBorder = (p.border || 0) > 0;
+        overlay.style.textShadow = hasBorder
+            ? `0 0 4px ${p.border_color || 'black'}, 2px 2px 4px ${p.border_color || 'black'}`
+            : '2px 2px 4px rgba(0,0,0,0.6)';
+        const y = p.y;
+        if (typeof y === 'number') {
+            overlay.style.top = (y / 1080 * 100) + '%';
+            overlay.style.bottom = '';
+        } else if (typeof y === 'string' && y.includes('*')) {
+            // "h*0.80" → bottom 20%
+            const m = y.match(/\*\s*0?\.(\d+)/);
+            if (m) overlay.style.top = '0.' + m[1] * 100 / 10 + '%';
+            overlay.style.bottom = '';
+        } else {
+            overlay.style.bottom = '16%';
+            overlay.style.top = '';
+        }
+    }
+    applyOverlayStyle();
+    stylePreset.addEventListener('change', applyOverlayStyle);
+
+    function updateCaption() {
+        const t = video.currentTime;
+        timeLabel.textContent = fmt(t) + ' / ' + fmt(video.duration || clip.duration);
+        played.style.width = (t / (video.duration || clip.duration) * 100) + '%';
+
+        const segs = clip.segments || [];
+        const active = segs.find(s => s.start <= t && t <= s.end);
+        if (!active) { overlay.innerHTML = ''; return; }
+
+        if (active.words && active.words.length) {
+            overlay.innerHTML = active.words.map(w => {
+                const on = w.start <= t && t <= w.end;
+                return `<span class="${on ? 'w-on' : ''}">${escapeHTML(w.word)}</span>`;
+            }).join(' ');
+        } else {
+            overlay.textContent = active.text || '';
+        }
+    }
+
+    video.addEventListener('timeupdate', updateCaption);
+    video.addEventListener('loadedmetadata', () => {
+        renderMarks();
+        updateCaption();
+    });
+    // 자막 수정 후 overlay 갱신
+    card._refreshOverlay = () => { renderMarks(); updateCaption(); };
+
+    playBtn.addEventListener('click', () => {
+        if (video.paused) { video.play(); playBtn.textContent = '❚❚'; }
+        else { video.pause(); playBtn.textContent = '▶'; }
+    });
+    video.addEventListener('play', () => playBtn.textContent = '❚❚');
+    video.addEventListener('pause', () => playBtn.textContent = '▶');
+
+    scrubber.addEventListener('click', e => {
+        const rect = scrubber.getBoundingClientRect();
+        const pct = (e.clientX - rect.left) / rect.width;
+        video.currentTime = pct * (video.duration || clip.duration);
+    });
+
+    function renderMarks() {
+        const dur = video.duration || clip.duration || 1;
+        captionMarks.innerHTML = (clip.segments || []).map(s => {
+            const l = (s.start / dur) * 100;
+            const w = Math.max(0.5, ((s.end - s.start) / dur) * 100);
+            return `<div class="vc-cap-mark" style="left:${l}%;width:${w}%"></div>`;
+        }).join('');
+        silenceMarks.innerHTML = (clip.silence_ranges || [])
+            .filter(s => s.suggest_skip).map(s => {
+                const l = (s.start / dur) * 100;
+                const w = Math.max(0.5, ((s.end - s.start) / dur) * 100);
+                return `<div class="vc-sil-mark" style="left:${l}%;width:${w}%"></div>`;
+            }).join('');
+    }
+}
+
+function escapeHTML(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
 }
 
 // ───── 트림 핸들 ─────
@@ -290,10 +403,12 @@ function renderCaptions(card, clip) {
                 clip.segments.splice(i, 1);
                 saveMeta({ clips: [{ id: clip.id, segments: clip.segments }] });
                 renderCaptions(card, clip);
+                if (card._refreshOverlay) card._refreshOverlay();
                 pushUndo(() => {
                     clip.segments.splice(i, 0, removed);
                     saveMeta({ clips: [{ id: clip.id, segments: clip.segments }] });
                     renderCaptions(card, clip);
+                    if (card._refreshOverlay) card._refreshOverlay();
                 });
                 showToast(`"${removed.text.slice(0, 20)}" 삭제`, () => {});
             });
@@ -388,8 +503,14 @@ exportBtn.addEventListener('click', async () => {
         pollJob(j.job_id, exportStatus, (final) => {
             if (final.download_url) {
                 exportStatus.className = 'status ok';
-                exportStatus.innerHTML =
-                    `완료 · <a href="${final.download_url}">결과 영상 다운로드</a>`;
+                let html = `완료 · <a href="${final.download_url}">결과 영상 다운로드</a>`;
+                if (final.thumbs_url) {
+                    html += `<div class="thumb-strip">` +
+                        [0,1,2,3,4,5].map(i =>
+                            `<img src="${final.thumbs_url}/${i}" alt="">`).join('') +
+                        `</div>`;
+                }
+                exportStatus.innerHTML = html;
             }
             exportBtn.disabled = false;
         });

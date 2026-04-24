@@ -25,6 +25,46 @@ import silence as silence_mod
 import smart_crop as smart_crop_mod
 import smart_edit as smart_edit_mod
 
+
+def _gen_preview_thumbs(video: Path, out_dir: Path, job_id: str, n: int = 6):
+    """영상에서 n 장의 썸네일 추출 → data/<pid>/output/thumbs_<job>/"""
+    import subprocess as _sp
+    tdir = out_dir / f"thumbs_{job_id}"
+    tdir.mkdir(exist_ok=True)
+    # ffprobe 로 duration 얻어서 균등 분할
+    r = _sp.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(video)],
+        capture_output=True, text=True)
+    try:
+        dur = float(r.stdout.strip() or 0)
+    except ValueError:
+        dur = 0
+    if dur <= 0:
+        return
+    for i in range(n):
+        t = dur * (i + 0.5) / n
+        out = tdir / f"{i:02d}.jpg"
+        _sp.run(
+            ["ffmpeg", "-y", "-ss", f"{t:.2f}", "-i", str(video),
+             "-frames:v", "1", "-vf", "scale=320:-1", "-q:v", "5",
+             str(out)], capture_output=True)
+
+
+def _shift_segment(seg: dict, delta: float) -> dict:
+    """세그먼트 + 내부 words 의 시간을 delta 만큼 이동한 복사본 반환."""
+    out = dict(seg)
+    out["start"] = round(seg["start"] + delta, 2)
+    out["end"] = round(seg["end"] + delta, 2)
+    if seg.get("words"):
+        out["words"] = [
+            {"start": round(w["start"] + delta, 2),
+             "end": round(w["end"] + delta, 2),
+             "word": w["word"]}
+            for w in seg["words"]
+        ]
+    return out
+
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
 PROJECTS_DIR = DATA_DIR / "projects"
@@ -153,9 +193,11 @@ def project_new():
         "auto_highlight": False,     # 자동 하이라이트 선택
         "highlight_duration": 60,    # 목표 길이 (초)
         "smart_edit": False,         # 단어 단위 점프컷 + 간투어 제거
-        "remove_fillers": True,      # "음/어/그" 제거
-        "aggressive_fillers": False, # "좀/막/진짜/그냥" 까지 제거
-        "jump_gap": 0.4,             # N초 초과 단어 공백은 삭제
+        "remove_fillers": True,
+        "aggressive_fillers": False,
+        "jump_gap": 0.4,
+        "word_highlight": False,     # Opus Clip 스타일 한 단어씩 팝업
+        "highlight_color": "#FFD080",
         "status": "준비됨",
     }
     save_meta(pid, meta)
@@ -229,6 +271,10 @@ def project_update(pid):
                 meta["jump_gap"] = max(0.1, float(data["jump_gap"]))
             except (TypeError, ValueError):
                 pass
+        if "word_highlight" in data:
+            meta["word_highlight"] = bool(data["word_highlight"])
+        if "highlight_color" in data:
+            meta["highlight_color"] = str(data["highlight_color"])[:20]
 
         if "clips" in data:
             by_id = {c["id"]: c for c in meta["clips"]}
@@ -426,7 +472,7 @@ def _run_export(pid: str, job_id: str):
                     running += b - a
             else:
                 keep = [(t0, t1)]
-                shifted = [dict(s, start=s["start"] - t0, end=s["end"] - t0)
+                shifted = [_shift_segment(s, -t0)
                            for s in segs if t0 <= s["start"] and s["end"] <= t1]
 
                 if meta.get("skip_silence") and clip.get("silence_ranges"):
@@ -434,8 +480,7 @@ def _run_export(pid: str, job_id: str):
                         r for r in clip["silence_ranges"]
                         if r.get("suggest_skip") and r["start"] >= t0 and r["end"] <= t1
                     ]
-                    rebased = [dict(s, start=s["start"] - t0, end=s["end"] - t0)
-                               for s in segs if t0 <= s["start"] and s["end"] <= t1]
+                    rebased = list(shifted)  # 이미 t0 기준으로 이동된 복사본
                     rebased_silence = [{**r, "start": r["start"] - t0,
                                         "end": r["end"] - t0}
                                        for r in in_range_silence]
@@ -456,11 +501,7 @@ def _run_export(pid: str, job_id: str):
 
             # 세그먼트를 최종 타임라인에 맞춰 이동
             for s in shifted:
-                combined_segments.append({
-                    "start": round(s["start"] + offset, 2),
-                    "end": round(s["end"] + offset, 2),
-                    "text": s["text"],
-                })
+                combined_segments.append(_shift_segment(s, offset))
             offset += sum(b - a for a, b in keep)
 
         _JOBS[job_id]["progress"] = "이어붙이는 중"
@@ -468,16 +509,25 @@ def _run_export(pid: str, job_id: str):
         processor.concat_clips(trimmed_clips, concat_out)
 
         _JOBS[job_id]["progress"] = "자막·포맷 적용"
+        _JOBS[job_id]["phase"] = "captions"
         final_out = out_dir / f"result_{job_id}.mp4"
 
         crop_plan = None
         if meta.get("orientation") == "vertical" and meta.get("smart_crop"):
             _JOBS[job_id]["progress"] = "얼굴 추적 분석 중"
+            _JOBS[job_id]["phase"] = "face_detect"
             try:
                 crop_plan = smart_crop_mod.plan_smart_crop(concat_out)
             except Exception:
                 traceback.print_exc()
                 crop_plan = None
+
+        # 썸네일 생성 — 진행 시각화용 (concat 중간 프레임 몇 장)
+        try:
+            _gen_preview_thumbs(concat_out, out_dir, job_id)
+            _JOBS[job_id]["thumbs_url"] = f"/project/{pid}/thumbs/{job_id}"
+        except Exception:
+            pass
 
         processor.apply_effects(
             concat_out, final_out,
@@ -485,6 +535,8 @@ def _run_export(pid: str, job_id: str):
             preset_name=meta.get("style_preset", "minimal"),
             vertical=(meta.get("orientation") == "vertical"),
             smart_crop_plan=crop_plan,
+            word_highlight=bool(meta.get("word_highlight")),
+            highlight_color=meta.get("highlight_color", "#FFD080"),
         )
 
         # 최종 타임라인 세그먼트도 저장 (디스크 최신 meta 에 merge)
@@ -527,6 +579,12 @@ def project_export(pid):
 def project_download(pid, fname):
     out_dir = project_dir(pid) / "output"
     return send_from_directory(out_dir, fname, as_attachment=True)
+
+
+@app.route("/project/<pid>/thumbs/<job_id>/<int:idx>")
+def project_thumbs(pid, job_id, idx):
+    tdir = project_dir(pid) / "output" / f"thumbs_{job_id}"
+    return send_from_directory(tdir, f"{idx:02d}.jpg")
 
 
 # ───────── 실행 ─────────

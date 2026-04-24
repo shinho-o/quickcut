@@ -70,6 +70,11 @@ window.PRESETS = {{ style_presets | tojson | safe }};
             </label>
 
             <label class="fld inline">
+                <input type="checkbox" id="wordHighlight" {% if meta.word_highlight %}checked{% endif %}>
+                <span>단어 하이라이트 자막 <small>(Opus Clip 스타일)</small></span>
+            </label>
+
+            <label class="fld inline">
                 <input type="checkbox" id="smartCrop" {% if meta.smart_crop %}checked{% endif %}>
                 <span>얼굴 추적 크롭 (9:16 선택 시)</span>
             </label>

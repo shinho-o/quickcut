@@ -153,8 +153,14 @@ def get_presets() -> dict:
 
 
 def build_caption_filter(segments: list[dict], preset_name: str,
-                         font_path: str | None = None) -> str:
-    """drawtext 필터 체인 — subtitles 필터의 Windows 경로 문제 우회."""
+                         font_path: str | None = None,
+                         word_highlight: bool = False,
+                         highlight_color: str = "#FFD080") -> str:
+    """drawtext 필터 체인 — subtitles 필터의 Windows 경로 문제 우회.
+
+    word_highlight=True 이고 세그먼트에 words 가 있으면 단어별로 두 개의
+    drawtext 를 발행 (기본색 + 현재 단어만 강조색).
+    """
     all_presets = get_presets()
     preset = all_presets.get(preset_name, all_presets["minimal"])
 
@@ -162,19 +168,14 @@ def build_caption_filter(segments: list[dict], preset_name: str,
     if font_path:
         ff_font = font_path.replace("\\", "/").replace(":", r"\:")
 
-    filters = []
-    for seg in segments:
-        text = seg.get("text", "").strip()
-        if not text:
-            continue
-        esc = _escape_drawtext(text)
+    def base_parts(text_esc: str, start: float, end: float, color: str | None = None):
         parts = [
-            f"drawtext=text='{esc}'",
+            f"drawtext=text='{text_esc}'",
             f"fontsize={preset['font_size']}",
-            f"fontcolor={preset['color']}",
+            f"fontcolor={color or preset['color']}",
             "x=(w-text_w)/2",
             f"y={preset['y']}",
-            f"enable='between(t\\,{seg['start']:.2f}\\,{seg['end']:.2f})'",
+            f"enable='between(t\\,{start:.2f}\\,{end:.2f})'",
         ]
         if preset.get("border", 0):
             parts.append(f"borderw={preset['border']}")
@@ -185,7 +186,36 @@ def build_caption_filter(segments: list[dict], preset_name: str,
             parts.append("boxborderw=12")
         if ff_font:
             parts.append(f"fontfile='{ff_font}'")
-        filters.append(":".join(parts))
+        return ":".join(parts)
+
+    # 강조색 보정 (#RRGGBB → ffmpeg 0xRRGGBB or name)
+    hi = highlight_color or "#FFD080"
+    if hi.startswith("#"):
+        hi_ff = "0x" + hi[1:]
+    else:
+        hi_ff = hi
+
+    filters = []
+    for seg in segments:
+        text = seg.get("text", "").strip()
+        if not text:
+            continue
+        words = seg.get("words")
+
+        if word_highlight and words:
+            # Opus Clip 스타일: 한 단어씩 팝업으로만 표시 (전체 문장은 안 그림)
+            for w in words:
+                wt = w.get("word", "").strip()
+                if not wt:
+                    continue
+                esc_w = _escape_drawtext(wt)
+                filters.append(
+                    base_parts(esc_w, float(w["start"]), float(w["end"]), color=hi_ff)
+                )
+        else:
+            # 기본: 세그먼트 전체 문장을 구간 동안 표시
+            esc = _escape_drawtext(text)
+            filters.append(base_parts(esc, seg["start"], seg["end"]))
     return ",".join(filters) if filters else ""
 
 
@@ -240,20 +270,24 @@ def concat_clips(clips: list[Path], out: Path):
 
 def apply_effects(src: Path, out: Path, segments: list[dict] | None,
                   preset_name: str, vertical: bool,
-                  smart_crop_plan: list[dict] | None = None):
-    """자막 번인 + 선택적 9:16 세로 변환.
-
-    smart_crop_plan 이 있으면 씬별 얼굴 중심 크롭을 적용하고,
-    없고 vertical=True 이면 기존 레터박스 방식.
-    """
+                  smart_crop_plan: list[dict] | None = None,
+                  word_highlight: bool = False,
+                  highlight_color: str = "#FFD080"):
+    """자막 번인 + 선택적 9:16 세로 변환."""
     if vertical and smart_crop_plan:
-        _apply_smart_crop(src, out, segments, preset_name, smart_crop_plan)
+        _apply_smart_crop(src, out, segments, preset_name, smart_crop_plan,
+                          word_highlight=word_highlight,
+                          highlight_color=highlight_color)
         return
 
     vf_parts = []
     if segments:
         font = find_korean_font()
-        caption_vf = build_caption_filter(segments, preset_name, font)
+        caption_vf = build_caption_filter(
+            segments, preset_name, font,
+            word_highlight=word_highlight,
+            highlight_color=highlight_color,
+        )
         if caption_vf:
             vf_parts.append(caption_vf)
     if vertical:
@@ -275,7 +309,9 @@ def apply_effects(src: Path, out: Path, segments: list[dict] | None,
 
 
 def _apply_smart_crop(src: Path, out: Path, segments: list[dict] | None,
-                      preset_name: str, plan: list[dict]):
+                      preset_name: str, plan: list[dict],
+                      word_highlight: bool = False,
+                      highlight_color: str = "#FFD080"):
     """얼굴 추적 크롭: 씬별 trim→crop→스케일→자막 번인→concat."""
     import tempfile as _tmp
     tmpdir = Path(_tmp.mkdtemp(prefix="qc_smart_"))
@@ -305,7 +341,9 @@ def _apply_smart_crop(src: Path, out: Path, segments: list[dict] | None,
     vf_parts = []
     if segments:
         font = find_korean_font()
-        caption_vf = build_caption_filter(segments, preset_name, font)
+        caption_vf = build_caption_filter(
+            segments, preset_name, font,
+            word_highlight=word_highlight, highlight_color=highlight_color)
         if caption_vf:
             vf_parts.append(caption_vf)
 
