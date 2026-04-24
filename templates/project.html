@@ -44,9 +44,29 @@ window.PRESETS = {{ style_presets | tojson | safe }};
                 </select>
             </label>
 
+            <label class="fld inline primary-toggle">
+                <input type="checkbox" id="smartEdit" {% if meta.smart_edit %}checked{% endif %}>
+                <span><strong>똑똑한 자동 편집</strong> <small>(단어 단위 컷 · 간투어 제거)</small></span>
+            </label>
+
+            <div id="smartEditOpts" style="{% if not meta.smart_edit %}display:none{% endif %};margin-left:20px">
+                <label class="fld inline">
+                    <input type="checkbox" id="removeFillers" {% if meta.remove_fillers %}checked{% endif %}>
+                    <span>간투어 제거 (음/어/그)</span>
+                </label>
+                <label class="fld inline">
+                    <input type="checkbox" id="aggressiveFillers" {% if meta.aggressive_fillers %}checked{% endif %}>
+                    <span>공격적 제거 (+좀/막/진짜/그냥)</span>
+                </label>
+                <label class="fld">
+                    <span>컷 임계값 (초, 이보다 긴 공백 자름)</span>
+                    <input type="number" id="jumpGap" step="0.1" min="0.1" max="2.0" value="{{ meta.jump_gap or 0.4 }}">
+                </label>
+            </div>
+
             <label class="fld inline">
                 <input type="checkbox" id="skipSilence" {% if meta.skip_silence %}checked{% endif %}>
-                <span>무음 구간 자동 스킵</span>
+                <span>무음 구간 자동 스킵 <small>(기본)</small></span>
             </label>
 
             <label class="fld inline">

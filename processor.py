@@ -44,15 +44,33 @@ def _get_whisper(model_name: str):
         return _WHISPER_CACHE[model_name]
 
 
-def transcribe(video: Path, model_name: str = "small", lang: str = "ko") -> list[dict]:
-    """Whisper 로 세그먼트 전사. 모델은 프로세스당 한 번만 로드."""
+def transcribe(video: Path, model_name: str = "small", lang: str = "ko",
+               word_timestamps: bool = False) -> list[dict]:
+    """Whisper 전사. word_timestamps=True 면 세그먼트에 `words` 배열도 포함.
+
+    반환:
+      [{start, end, text, [words: [{start, end, word}]]}, ...]
+    """
     model = _get_whisper(model_name)
     segs_iter, _ = model.transcribe(
-        str(video), language=lang, beam_size=1, vad_filter=True)
-    return [
-        {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()}
-        for s in segs_iter
-    ]
+        str(video), language=lang, beam_size=1, vad_filter=True,
+        word_timestamps=word_timestamps,
+    )
+    out = []
+    for s in segs_iter:
+        entry = {
+            "start": round(s.start, 2),
+            "end": round(s.end, 2),
+            "text": s.text.strip(),
+        }
+        if word_timestamps and getattr(s, "words", None):
+            entry["words"] = [
+                {"start": round(w.start, 2), "end": round(w.end, 2),
+                 "word": w.word.strip()}
+                for w in s.words if w.word.strip()
+            ]
+        out.append(entry)
+    return out
 
 
 def run(cmd: list[str], cwd: str | None = None) -> str:

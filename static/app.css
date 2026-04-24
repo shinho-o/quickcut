@@ -127,6 +127,21 @@ html, body {
     font-size: 0.88rem;
     color: var(--ink);
 }
+.fld.inline.primary-toggle {
+    padding: 8px 10px;
+    background: var(--bg-alt);
+    border-radius: 6px;
+    margin-top: 4px;
+}
+.fld.inline.primary-toggle strong { font-weight: 600; }
+.fld.inline.primary-toggle small {
+    display: block;
+    color: var(--ink-soft);
+    font-size: 0.78rem;
+    margin-top: 2px;
+    font-weight: normal;
+}
+.fld.inline small { color: var(--ink-soft); font-size: 0.78rem; }
 input[type=text], input[type=number], select, textarea {
     width: 100%;
     padding: 9px 12px;

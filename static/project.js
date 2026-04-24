@@ -14,6 +14,11 @@ const smartCrop = document.getElementById('smartCrop');
 const autoHighlight = document.getElementById('autoHighlight');
 const highlightDuration = document.getElementById('highlightDuration');
 const highlightDurField = document.getElementById('highlightDurField');
+const smartEdit = document.getElementById('smartEdit');
+const smartEditOpts = document.getElementById('smartEditOpts');
+const removeFillers = document.getElementById('removeFillers');
+const aggressiveFillers = document.getElementById('aggressiveFillers');
+const jumpGap = document.getElementById('jumpGap');
 const titleInput = document.getElementById('title');
 
 // ───── 유틸 ─────
@@ -50,6 +55,18 @@ if (autoHighlight) autoHighlight.addEventListener('change', () => {
 });
 if (highlightDuration) highlightDuration.addEventListener('change', () =>
     saveMeta({ highlight_duration: parseInt(highlightDuration.value) || 60 }));
+
+if (smartEdit) smartEdit.addEventListener('change', () => {
+    saveMeta({ smart_edit: smartEdit.checked });
+    if (smartEditOpts)
+        smartEditOpts.style.display = smartEdit.checked ? '' : 'none';
+});
+if (removeFillers) removeFillers.addEventListener('change', () =>
+    saveMeta({ remove_fillers: removeFillers.checked }));
+if (aggressiveFillers) aggressiveFillers.addEventListener('change', () =>
+    saveMeta({ aggressive_fillers: aggressiveFillers.checked }));
+if (jumpGap) jumpGap.addEventListener('change', () =>
+    saveMeta({ jump_gap: parseFloat(jumpGap.value) || 0.4 }));
 
 titleInput.addEventListener('change', () => {
     const v = titleInput.value.trim();

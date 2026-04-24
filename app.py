@@ -23,6 +23,7 @@ import highlight as highlight_mod
 import processor
 import silence as silence_mod
 import smart_crop as smart_crop_mod
+import smart_edit as smart_edit_mod
 
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
@@ -151,6 +152,10 @@ def project_new():
         "smart_crop": True,          # 세로 선택 시 얼굴 추적 크롭
         "auto_highlight": False,     # 자동 하이라이트 선택
         "highlight_duration": 60,    # 목표 길이 (초)
+        "smart_edit": False,         # 단어 단위 점프컷 + 간투어 제거
+        "remove_fillers": True,      # "음/어/그" 제거
+        "aggressive_fillers": False, # "좀/막/진짜/그냥" 까지 제거
+        "jump_gap": 0.4,             # N초 초과 단어 공백은 삭제
         "status": "준비됨",
     }
     save_meta(pid, meta)
@@ -213,6 +218,17 @@ def project_update(pid):
                 meta["highlight_duration"] = max(10, int(data["highlight_duration"]))
             except (TypeError, ValueError):
                 pass
+        if "smart_edit" in data:
+            meta["smart_edit"] = bool(data["smart_edit"])
+        if "remove_fillers" in data:
+            meta["remove_fillers"] = bool(data["remove_fillers"])
+        if "aggressive_fillers" in data:
+            meta["aggressive_fillers"] = bool(data["aggressive_fillers"])
+        if "jump_gap" in data:
+            try:
+                meta["jump_gap"] = max(0.1, float(data["jump_gap"]))
+            except (TypeError, ValueError):
+                pass
 
         if "clips" in data:
             by_id = {c["id"]: c for c in meta["clips"]}
@@ -260,7 +276,8 @@ def _run_analyze(pid: str, job_id: str, keep_existing: bool):
 
             video_path = project_dir(pid) / "clips" / clip["filename"]
             _JOBS[job_id]["progress"] = f"자막 생성 {idx+1}/{total}: {clip['filename']}"
-            segments = processor.transcribe(video_path)
+            # 똑똑한 자동 편집을 위해 word-level 타임스탬프도 함께 확보
+            segments = processor.transcribe(video_path, word_timestamps=True)
 
             _JOBS[job_id]["progress"] = f"무음 감지 {idx+1}/{total}/{total}"
             try:
@@ -350,12 +367,45 @@ def _run_export(pid: str, job_id: str):
                 highlight_filter.setdefault(s["_clip_id"], []).append(
                     (s["start"], s["end"]))
 
+        smart_edit_on = meta.get("smart_edit")
+
         for idx, clip in enumerate(meta["clips"]):
             src = pdir / "clips" / clip["filename"]
             t0 = float(clip.get("trim_start", 0.0))
             t1 = float(clip.get("trim_end", clip.get("duration", 0.0)))
 
             segs = clip.get("segments", [])
+
+            # ── 똑똑한 자동 편집: 단어 단위 점프컷 + 간투어 제거 ──
+            if smart_edit_on and segs:
+                _JOBS[job_id]["progress"] = f"똑똑한 편집 {idx+1}번 클립"
+                # 트림 범위 안의 세그먼트만 전달
+                in_range = [s for s in segs
+                            if t0 <= s["start"] and s["end"] <= t1]
+                plan = smart_edit_mod.build_keep_plan(
+                    in_range,
+                    max_gap_sec=float(meta.get("jump_gap", 0.4)),
+                    remove_fillers=meta.get("remove_fillers", True),
+                    aggressive_fillers=meta.get("aggressive_fillers", False),
+                )
+                if plan["keep_ranges"]:
+                    keep = [(t0 + a, t0 + b) for a, b in plan["keep_ranges"]]
+                    shifted = smart_edit_mod.words_to_segments(plan["kept_words"])
+                    # 각 keep 범위 재인코딩 트림 후 컨캣
+                    for k_idx, (a, b) in enumerate(keep):
+                        tr = tmp_dir / f"clip_{idx:02d}_{k_idx:02d}.mp4"
+                        _JOBS[job_id]["progress"] = \
+                            f"트리밍 {idx+1}번 ({k_idx+1}/{len(keep)})"
+                        processor.trim_clip(src, tr, a, b)
+                        trimmed_clips.append(tr)
+                    for s in shifted:
+                        combined_segments.append({
+                            "start": round(s["start"] + offset, 2),
+                            "end": round(s["end"] + offset, 2),
+                            "text": s["text"],
+                        })
+                    offset += sum(b - a for a, b in keep)
+                    continue
 
             if auto_h:
                 ranges = highlight_filter.get(clip["id"], [])
