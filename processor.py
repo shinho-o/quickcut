@@ -139,10 +139,24 @@ STYLE_PRESETS: dict[str, dict] = {
 }
 
 
+def get_presets() -> dict:
+    """기본 프리셋 + (지침서 md 가 있으면) 동적 '이번주 지침' 프리셋."""
+    presets = dict(STYLE_PRESETS)
+    try:
+        import insights_loader
+        p = insights_loader.build_preset()
+        if p:
+            presets["insight"] = p
+    except Exception:
+        pass
+    return presets
+
+
 def build_caption_filter(segments: list[dict], preset_name: str,
                          font_path: str | None = None) -> str:
     """drawtext 필터 체인 — subtitles 필터의 Windows 경로 문제 우회."""
-    preset = STYLE_PRESETS.get(preset_name, STYLE_PRESETS["minimal"])
+    all_presets = get_presets()
+    preset = all_presets.get(preset_name, all_presets["minimal"])
 
     ff_font = None
     if font_path:
@@ -178,15 +192,18 @@ def build_caption_filter(segments: list[dict], preset_name: str,
 # ───────── 클립 처리 ─────────
 
 def trim_clip(src: Path, out: Path, start: float, end: float):
-    """정확한 프레임 컷: -ss 를 -i 뒤(decode seek)에 두고 재인코딩.
-    원본 해상도 유지(단, fps 만 통일)하여 화질 손실 최소화.
-    concat 시 같은 해상도 맞추는 건 apply_effects 단계에서 처리.
+    """정확한 프레임 컷 + 해상도/fps/포맷 통일 (concat 호환).
+    lanczos 고급 리스케일링으로 1080p 다운스케일 시 샤프 유지.
     """
     run([
         "ffmpeg", "-y",
         "-i", str(src),
         "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
-        "-vf", "fps=30,format=yuv420p",
+        "-vf", (
+            "scale=w=1920:h=1080:force_original_aspect_ratio=decrease:flags=lanczos,"
+            "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,"
+            "fps=30,format=yuv420p"
+        ),
         "-c:v", "libx264", "-preset", "medium", "-crf", "18",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
         "-movflags", "+faststart",

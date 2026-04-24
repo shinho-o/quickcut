@@ -168,7 +168,7 @@ def project_page(pid):
     return render_template(
         "project.html",
         meta=meta,
-        style_presets=processor.STYLE_PRESETS,
+        style_presets=processor.get_presets(),
     )
 
 
