@@ -10,19 +10,44 @@ const createStatus = document.getElementById('createStatus');
 let files = [];
 
 function refreshList() {
-    fileList.innerHTML = files.map(f =>
-        `<li>${f.name} · ${(f.size / 1024 / 1024).toFixed(1)} MB</li>`
+    fileList.innerHTML = files.map((f, i) =>
+        `<li>${f.name} · ${(f.size / 1024 / 1024).toFixed(1)} MB
+         <button type="button" data-idx="${i}" class="rm" title="빼기">×</button></li>`
     ).join('');
     createBtn.disabled = files.length === 0;
+    createBtn.textContent = files.length > 0
+        ? `${files.length}개 영상으로 프로젝트 만들기`
+        : '프로젝트 만들기';
+    fileList.querySelectorAll('.rm').forEach(btn => {
+        btn.addEventListener('click', e => {
+            e.stopPropagation();
+            e.preventDefault();
+            files.splice(parseInt(btn.dataset.idx), 1);
+            refreshList();
+        });
+    });
+}
+
+function addFiles(incoming) {
+    const videos = Array.from(incoming).filter(f => f.type.startsWith('video/'));
+    for (const f of videos) {
+        const dup = files.some(x =>
+            x.name === f.name && x.size === f.size && x.lastModified === f.lastModified);
+        if (!dup) files.push(f);
+    }
+    refreshList();
 }
 
 dropzone.addEventListener('click', e => {
-    if (e.target.tagName !== 'INPUT') input.click();
+    // 삭제 버튼 / 파일 자체 클릭은 입력창 열지 않음
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
+    input.click();
 });
 
 input.addEventListener('change', e => {
-    files = Array.from(e.target.files);
-    refreshList();
+    addFiles(e.target.files);
+    // 같은 파일도 다시 선택 가능하도록 값 초기화
+    e.target.value = '';
 });
 
 ['dragenter', 'dragover'].forEach(ev =>
@@ -38,11 +63,7 @@ input.addEventListener('change', e => {
     })
 );
 dropzone.addEventListener('drop', e => {
-    const dropped = Array.from(e.dataTransfer.files).filter(f =>
-        f.type.startsWith('video/')
-    );
-    files = files.concat(dropped);
-    refreshList();
+    addFiles(e.dataTransfer.files);
 });
 
 form.addEventListener('submit', async e => {
