@@ -285,25 +285,31 @@ def _concat_list_escape(path: Path) -> str:
 
 
 def concat_clips(clips: list[Path], out: Path):
-    """여러 mp4 를 concat demuxer 로 이어붙임 (trim_clip 이 파라미터 통일).
-    단일 클립이면 바로 복사.
+    """여러 mp4 를 concat FILTER 로 이어붙임 (안정성 우선).
+    단일 클립이면 복사.
     """
     if len(clips) == 1:
         shutil.copy(clips[0], out)
         return
 
-    tmpdir = Path(tempfile.mkdtemp(prefix="qc_concat_"))
-    listing = tmpdir / "list.txt"
-    listing.write_text(
-        "\n".join(f"file '{_concat_list_escape(c)}'" for c in clips),
-        encoding="utf-8",
-    )
-    run([
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-        "-i", str(listing), "-c", "copy",
+    n = len(clips)
+    cmd = ["ffmpeg", "-y"]
+    for c in clips:
+        cmd += ["-i", str(c)]
+
+    # [0:v][0:a][1:v][1:a]...concat=n=N:v=1:a=1[vo][ao]
+    streams = "".join(f"[{i}:v][{i}:a]" for i in range(n))
+    filter_cx = f"{streams}concat=n={n}:v=1:a=1[vo][ao]"
+
+    cmd += [
+        "-filter_complex", filter_cx,
+        "-map", "[vo]", "-map", "[ao]",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
         str(out),
-    ])
+    ]
+    run(cmd)
 
 
 def apply_effects(src: Path, out: Path, segments: list[dict] | None,
