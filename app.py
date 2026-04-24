@@ -434,9 +434,9 @@ def _run_export(pid: str, job_id: str):
             segs = clip.get("segments", [])
 
             # ── 똑똑한 자동 편집: 단어 단위 점프컷 + 간투어 제거 ──
-            if smart_edit_on and segs:
+            has_words = any(s.get("words") for s in segs)
+            if smart_edit_on and segs and has_words:
                 _JOBS[job_id]["progress"] = f"똑똑한 편집 {idx+1}번 클립"
-                # 트림 범위 안의 세그먼트만 전달
                 in_range = [s for s in segs
                             if t0 <= s["start"] and s["end"] <= t1]
                 plan = smart_edit_mod.build_keep_plan(
@@ -448,7 +448,6 @@ def _run_export(pid: str, job_id: str):
                 if plan["keep_ranges"]:
                     keep = [(t0 + a, t0 + b) for a, b in plan["keep_ranges"]]
                     shifted = smart_edit_mod.words_to_segments(plan["kept_words"])
-                    # 각 keep 범위 재인코딩 트림 후 컨캣
                     for k_idx, (a, b) in enumerate(keep):
                         tr = tmp_dir / f"clip_{idx:02d}_{k_idx:02d}.mp4"
                         _JOBS[job_id]["progress"] = \
@@ -463,6 +462,10 @@ def _run_export(pid: str, job_id: str):
                         })
                     offset += sum(b - a for a, b in keep)
                     continue
+            elif smart_edit_on and segs and not has_words:
+                # word_timestamps 없는 구버전 분석 — 일반 트림으로 폴백
+                _JOBS[job_id]["progress"] = \
+                    f"{idx+1}번 클립: 단어 정보 없음 (구버전 분석) — 일반 편집으로 진행"
 
             if auto_h:
                 ranges = highlight_filter.get(clip["id"], [])

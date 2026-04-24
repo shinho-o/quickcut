@@ -286,8 +286,12 @@ def _concat_list_escape(path: Path) -> str:
 
 def concat_clips(clips: list[Path], out: Path):
     """여러 mp4 를 concat FILTER 로 이어붙임 (안정성 우선).
-    단일 클립이면 복사.
+    단일 클립이면 복사. 빈 리스트면 에러.
     """
+    if not clips:
+        raise RuntimeError(
+            "편집할 구간이 없습니다. 자막·트림·하이라이트 설정을 확인해주세요."
+        )
     if len(clips) == 1:
         shutil.copy(clips[0], out)
         return
