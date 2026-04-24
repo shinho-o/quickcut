@@ -10,6 +10,10 @@ const exportStatus = document.getElementById('exportStatus');
 const stylePreset = document.getElementById('stylePreset');
 const orientation = document.getElementById('orientation');
 const skipSilence = document.getElementById('skipSilence');
+const smartCrop = document.getElementById('smartCrop');
+const autoHighlight = document.getElementById('autoHighlight');
+const highlightDuration = document.getElementById('highlightDuration');
+const highlightDurField = document.getElementById('highlightDurField');
 const titleInput = document.getElementById('title');
 
 // ───── 유틸 ─────
@@ -37,6 +41,15 @@ orientation.addEventListener('change', () =>
     saveMeta({ orientation: orientation.value }));
 skipSilence.addEventListener('change', () =>
     saveMeta({ skip_silence: skipSilence.checked }));
+if (smartCrop) smartCrop.addEventListener('change', () =>
+    saveMeta({ smart_crop: smartCrop.checked }));
+if (autoHighlight) autoHighlight.addEventListener('change', () => {
+    saveMeta({ auto_highlight: autoHighlight.checked });
+    if (highlightDurField)
+        highlightDurField.style.display = autoHighlight.checked ? '' : 'none';
+});
+if (highlightDuration) highlightDuration.addEventListener('change', () =>
+    saveMeta({ highlight_duration: parseInt(highlightDuration.value) || 60 }));
 
 titleInput.addEventListener('change', () => {
     const v = titleInput.value.trim();

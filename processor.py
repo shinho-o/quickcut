@@ -206,20 +206,24 @@ def concat_clips(clips: list[Path], out: Path):
 
 
 def apply_effects(src: Path, out: Path, segments: list[dict] | None,
-                  preset_name: str, vertical: bool):
+                  preset_name: str, vertical: bool,
+                  smart_crop_plan: list[dict] | None = None):
     """자막 번인 + 선택적 9:16 세로 변환.
-    vertical=True 이면 1080x1920 로 스케일+패드 (레터박스).
-    """
-    vf_parts = []
 
+    smart_crop_plan 이 있으면 씬별 얼굴 중심 크롭을 적용하고,
+    없고 vertical=True 이면 기존 레터박스 방식.
+    """
+    if vertical and smart_crop_plan:
+        _apply_smart_crop(src, out, segments, preset_name, smart_crop_plan)
+        return
+
+    vf_parts = []
     if segments:
         font = find_korean_font()
         caption_vf = build_caption_filter(segments, preset_name, font)
         if caption_vf:
             vf_parts.append(caption_vf)
-
     if vertical:
-        # 9:16 세로. 원본 비율 유지하며 중앙 배치, 빈 영역 블랙.
         vf_parts.append(
             "scale=1080:1920:force_original_aspect_ratio=decrease,"
             "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black"
@@ -231,6 +235,53 @@ def apply_effects(src: Path, out: Path, segments: list[dict] | None,
     cmd += [
         "-c:v", "libx264", "-preset", "fast", "-crf", "20",
         "-c:a", "aac", "-b:a", "160k",
+        "-movflags", "+faststart",
+        str(out),
+    ]
+    run(cmd)
+
+
+def _apply_smart_crop(src: Path, out: Path, segments: list[dict] | None,
+                      preset_name: str, plan: list[dict]):
+    """얼굴 추적 크롭: 씬별 trim→crop→스케일→자막 번인→concat."""
+    import tempfile as _tmp
+    tmpdir = Path(_tmp.mkdtemp(prefix="qc_smart_"))
+
+    parts = []
+    for i, s in enumerate(plan):
+        seg = tmpdir / f"seg_{i:03d}.mp4"
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(src),
+            "-ss", f"{s['start']:.3f}", "-to", f"{s['end']:.3f}",
+            "-vf", (
+                f"crop={s['src_w']}:{s['src_h']}:{s['src_x']}:0,"
+                "scale=1080:1920,fps=30,format=yuv420p"
+            ),
+            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+            "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
+            str(seg),
+        ]
+        run(cmd)
+        parts.append(seg)
+
+    concat_out = tmpdir / "concat.mp4"
+    concat_clips(parts, concat_out)
+
+    # 최종 자막 번인 단계
+    vf_parts = []
+    if segments:
+        font = find_korean_font()
+        caption_vf = build_caption_filter(segments, preset_name, font)
+        if caption_vf:
+            vf_parts.append(caption_vf)
+
+    cmd = ["ffmpeg", "-y", "-i", str(concat_out)]
+    if vf_parts:
+        cmd += ["-vf", ",".join(vf_parts)]
+    cmd += [
+        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+        "-c:a", "copy",
         "-movflags", "+faststart",
         str(out),
     ]

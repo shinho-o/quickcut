@@ -49,6 +49,21 @@ window.PRESETS = {{ style_presets | tojson | safe }};
                 <span>무음 구간 자동 스킵</span>
             </label>
 
+            <label class="fld inline">
+                <input type="checkbox" id="smartCrop" {% if meta.smart_crop %}checked{% endif %}>
+                <span>얼굴 추적 크롭 (9:16 선택 시)</span>
+            </label>
+
+            <label class="fld inline">
+                <input type="checkbox" id="autoHighlight" {% if meta.auto_highlight %}checked{% endif %}>
+                <span>하이라이트 자동 선택</span>
+            </label>
+
+            <label class="fld" id="highlightDurField" style="{% if not meta.auto_highlight %}display:none{% endif %}">
+                <span>목표 길이 (초)</span>
+                <input type="number" id="highlightDuration" min="15" max="300" value="{{ meta.highlight_duration or 60 }}">
+            </label>
+
             <button id="exportBtn" class="btn-primary">영상 내보내기</button>
             <div id="exportStatus" class="status"></div>
         </section>

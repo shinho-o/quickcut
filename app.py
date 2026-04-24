@@ -19,8 +19,10 @@ from flask import (Flask, abort, jsonify, render_template, request,
                    send_from_directory, url_for)
 from werkzeug.utils import secure_filename
 
+import highlight as highlight_mod
 import processor
 import silence as silence_mod
+import smart_crop as smart_crop_mod
 
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
@@ -146,6 +148,9 @@ def project_new():
         "style_preset": "minimal",
         "orientation": "original",   # original | vertical
         "skip_silence": True,
+        "smart_crop": True,          # 세로 선택 시 얼굴 추적 크롭
+        "auto_highlight": False,     # 자동 하이라이트 선택
+        "highlight_duration": 60,    # 목표 길이 (초)
         "status": "준비됨",
     }
     save_meta(pid, meta)
@@ -199,6 +204,15 @@ def project_update(pid):
             meta["orientation"] = data["orientation"]
         if "skip_silence" in data:
             meta["skip_silence"] = bool(data["skip_silence"])
+        if "smart_crop" in data:
+            meta["smart_crop"] = bool(data["smart_crop"])
+        if "auto_highlight" in data:
+            meta["auto_highlight"] = bool(data["auto_highlight"])
+        if "highlight_duration" in data:
+            try:
+                meta["highlight_duration"] = max(10, int(data["highlight_duration"]))
+            except (TypeError, ValueError):
+                pass
 
         if "clips" in data:
             by_id = {c["id"]: c for c in meta["clips"]}
@@ -318,35 +332,69 @@ def _run_export(pid: str, job_id: str):
         offset = 0.0
         combined_segments: list[dict] = []
 
+        # ── 자동 하이라이트: 모든 클립의 segment 를 점수화해 상위 구간만 남김 ──
+        auto_h = meta.get("auto_highlight")
+        hi_target = float(meta.get("highlight_duration", 60))
+        highlight_filter: dict[str, list[tuple[float, float]]] = {}
+        if auto_h:
+            _JOBS[job_id]["progress"] = "하이라이트 점수 계산"
+            all_scored: list[dict] = []
+            for clip in meta["clips"]:
+                src_p = pdir / "clips" / clip["filename"]
+                scored = highlight_mod.score_segments(src_p, clip.get("segments", []))
+                for s in scored:
+                    s["_clip_id"] = clip["id"]
+                all_scored.extend(scored)
+            picked = highlight_mod.pick_top(all_scored, hi_target)
+            for s in picked:
+                highlight_filter.setdefault(s["_clip_id"], []).append(
+                    (s["start"], s["end"]))
+
         for idx, clip in enumerate(meta["clips"]):
             src = pdir / "clips" / clip["filename"]
             t0 = float(clip.get("trim_start", 0.0))
             t1 = float(clip.get("trim_end", clip.get("duration", 0.0)))
 
-            # 스킵 반영
             segs = clip.get("segments", [])
-            keep: list[tuple[float, float]] = [(t0, t1)]
-            shifted = [dict(s, start=s["start"] - t0, end=s["end"] - t0)
-                       for s in segs if t0 <= s["start"] and s["end"] <= t1]
 
-            if meta.get("skip_silence") and clip.get("silence_ranges"):
-                # 트림 범위 안의 무음만 고려
-                in_range_silence = [
-                    r for r in clip["silence_ranges"]
-                    if r.get("suggest_skip") and r["start"] >= t0 and r["end"] <= t1
-                ]
-                # 세그먼트를 트림 0 기준으로 재배치한 뒤 스킵 적용
-                rebased = [dict(s, start=s["start"] - t0, end=s["end"] - t0)
+            if auto_h:
+                ranges = highlight_filter.get(clip["id"], [])
+                if not ranges:
+                    continue  # 선택된 하이라이트 없으면 이 클립 건너뜀
+                keep: list[tuple[float, float]] = sorted(ranges)
+                # 하이라이트 범위에 속한 세그먼트만 포함 + 각 범위 0 기준으로 시프트
+                shifted = []
+                running = 0.0
+                for a, b in keep:
+                    for s in segs:
+                        if s["start"] >= a and s["end"] <= b:
+                            shifted.append({
+                                "start": round(s["start"] - a + running, 2),
+                                "end": round(s["end"] - a + running, 2),
+                                "text": s["text"],
+                            })
+                    running += b - a
+            else:
+                keep = [(t0, t1)]
+                shifted = [dict(s, start=s["start"] - t0, end=s["end"] - t0)
                            for s in segs if t0 <= s["start"] and s["end"] <= t1]
-                rebased_silence = [{**r, "start": r["start"] - t0,
-                                    "end": r["end"] - t0}
-                                   for r in in_range_silence]
-                keep_rel, shifted = silence_mod.apply_skips(
-                    clip_duration=t1 - t0,
-                    segments=rebased,
-                    skip_ranges=rebased_silence,
-                )
-                keep = [(t0 + a, t0 + b) for a, b in keep_rel]
+
+                if meta.get("skip_silence") and clip.get("silence_ranges"):
+                    in_range_silence = [
+                        r for r in clip["silence_ranges"]
+                        if r.get("suggest_skip") and r["start"] >= t0 and r["end"] <= t1
+                    ]
+                    rebased = [dict(s, start=s["start"] - t0, end=s["end"] - t0)
+                               for s in segs if t0 <= s["start"] and s["end"] <= t1]
+                    rebased_silence = [{**r, "start": r["start"] - t0,
+                                        "end": r["end"] - t0}
+                                       for r in in_range_silence]
+                    keep_rel, shifted = silence_mod.apply_skips(
+                        clip_duration=t1 - t0,
+                        segments=rebased,
+                        skip_ranges=rebased_silence,
+                    )
+                    keep = [(t0 + a, t0 + b) for a, b in keep_rel]
 
             # 각 keep 범위를 재인코딩 트림
             for k_idx, (a, b) in enumerate(keep):
@@ -371,11 +419,22 @@ def _run_export(pid: str, job_id: str):
 
         _JOBS[job_id]["progress"] = "자막·포맷 적용"
         final_out = out_dir / f"result_{job_id}.mp4"
+
+        crop_plan = None
+        if meta.get("orientation") == "vertical" and meta.get("smart_crop"):
+            _JOBS[job_id]["progress"] = "얼굴 추적 분석 중"
+            try:
+                crop_plan = smart_crop_mod.plan_smart_crop(concat_out)
+            except Exception:
+                traceback.print_exc()
+                crop_plan = None
+
         processor.apply_effects(
             concat_out, final_out,
             segments=combined_segments,
             preset_name=meta.get("style_preset", "minimal"),
             vertical=(meta.get("orientation") == "vertical"),
+            smart_crop_plan=crop_plan,
         )
 
         # 최종 타임라인 세그먼트도 저장 (디스크 최신 meta 에 merge)
