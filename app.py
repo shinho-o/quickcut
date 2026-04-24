@@ -155,6 +155,7 @@ def project_new():
     pdir = PROJECTS_DIR / pid
     pdir.mkdir(parents=True)
     (pdir / "clips").mkdir()
+    (pdir / "preview").mkdir()
 
     clips = []
     for i, f in enumerate(files):
@@ -168,6 +169,12 @@ def project_new():
             w, h = processor.probe_resolution(dest)
         except Exception:
             duration, w, h = 0.0, 0, 0
+        # 브라우저 호환 프리뷰 생성 (iPhone HEVC → H.264)
+        preview = pdir / "preview" / f"{i:02d}.mp4"
+        try:
+            processor.make_browser_preview(dest, preview)
+        except Exception:
+            traceback.print_exc()
         clips.append({
             "id": f"{i:02d}",
             "filename": dest.name,
@@ -225,10 +232,14 @@ def project_delete(pid):
 
 @app.route("/project/<pid>/clip/<cid>/video")
 def clip_video(pid, cid):
+    """브라우저용 프리뷰(H.264) 우선 서빙. 없으면 원본 폴백."""
     meta = project_meta(pid)
     clip = next((c for c in meta["clips"] if c["id"] == cid), None)
     if not clip:
         abort(404)
+    preview = project_dir(pid) / "preview" / f"{cid}.mp4"
+    if preview.exists():
+        return send_from_directory(preview.parent, preview.name)
     return send_from_directory(project_dir(pid) / "clips", clip["filename"])
 
 

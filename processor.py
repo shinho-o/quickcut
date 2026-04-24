@@ -30,6 +30,44 @@ def probe_resolution(video: Path) -> tuple[int, int]:
     return int(s["width"]), int(s["height"])
 
 
+def probe_codec(video: Path) -> str:
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=codec_name",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(video)],
+        capture_output=True, text=True,
+    )
+    return r.stdout.strip().lower()
+
+
+def make_browser_preview(src: Path, preview_out: Path) -> bool:
+    """HEVC·AV1 등 브라우저 비호환 코덱이면 H.264 로 트랜스코딩.
+    이미 h264 면 파일만 복사(재인코딩 없음)로 빠르게 끝냄.
+    """
+    codec = probe_codec(src)
+    if codec in {"h264", "avc", "avc1"}:
+        try:
+            import shutil
+            shutil.copy(src, preview_out)
+            return True
+        except Exception:
+            pass
+
+    # H.264 + AAC 저용량 프리뷰 (웹 재생용 — export 에선 원본 사용)
+    try:
+        run([
+            "ffmpeg", "-y", "-i", str(src),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+            "-vf", "scale='min(1280,iw)':-2",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            str(preview_out),
+        ])
+        return True
+    except Exception:
+        return False
+
+
 import threading as _th
 _WHISPER_CACHE: dict = {}
 _WHISPER_LOCK = _th.Lock()
